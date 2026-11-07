@@ -30,6 +30,15 @@ type properties struct {
 	ufState       string
 	ufActiveEnter uint64
 	properties    map[string]any
+
+	// Dependency relationships exposed via the generic unit properties
+	requires   []string
+	wants      []string
+	requiredBy []string
+	wantedBy   []string
+
+	// unitPropsErr makes GetUnitPropertiesContext fail for the unit
+	unitPropsErr bool
 }
 
 func TestDefaultPattern(t *testing.T) {
@@ -961,13 +970,21 @@ func (c *fakeClient) ListUnitFilesByPatternsContext(_ context.Context, _, patter
 
 func (c *fakeClient) ListUnitsByNamesContext(_ context.Context, units []string) ([]sdbus.UnitStatus, error) {
 	var states []sdbus.UnitStatus
-	for name, u := range c.units {
-		for _, requestedName := range units {
-			if name == requestedName && u.state != nil {
+	for _, requestedName := range units {
+		if u, found := c.units[requestedName]; found {
+			if u.state != nil {
 				states = append(states, *u.state)
-				break
 			}
+			continue
 		}
+		// Mimic systemd which returns a 'not-found' status even for
+		// non-existing units.
+		states = append(states, sdbus.UnitStatus{
+			Name:        requestedName,
+			LoadState:   "not-found",
+			ActiveState: "inactive",
+			SubState:    "dead",
+		})
 	}
 
 	return states, nil
@@ -989,11 +1006,18 @@ func (c *fakeClient) GetUnitPropertiesContext(_ context.Context, unit string) (m
 	if !found {
 		return nil, nil
 	}
+	if u.unitPropsErr {
+		return nil, fmt.Errorf("Unknown object %q", unit)
+	}
 
 	return map[string]any{
 		"UnitFileState":        u.ufState,
 		"UnitFilePreset":       u.ufPreset,
 		"ActiveEnterTimestamp": u.ufActiveEnter,
+		"Requires":             u.requires,
+		"Wants":                u.wants,
+		"RequiredBy":           u.requiredBy,
+		"WantedBy":             u.wantedBy,
 	}, nil
 }
 

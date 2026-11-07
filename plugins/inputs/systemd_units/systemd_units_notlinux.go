@@ -14,7 +14,8 @@ import (
 var sampleConfig string
 
 type SystemdUnits struct {
-	Log telegraf.Logger `toml:"-"`
+	CollectDependencyHealth bool `toml:"collect_dependency_health"`
+	Log                     telegraf.Logger `toml:"-"`
 }
 
 func (*SystemdUnits) SampleConfig() string { return sampleConfig }

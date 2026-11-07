@@ -126,13 +126,14 @@ var (
 )
 
 type SystemdUnits struct {
-	Pattern         string          `toml:"pattern"`
-	UnitType        string          `toml:"unittype"`
-	Scope           string          `toml:"scope"`
-	Details         bool            `toml:"details"`
-	CollectDisabled bool            `toml:"collect_disabled_units"`
-	Timeout         config.Duration `toml:"timeout"`
-	Log             telegraf.Logger `toml:"-"`
+	Pattern                 string          `toml:"pattern"`
+	UnitType                string          `toml:"unittype"`
+	Scope                   string          `toml:"scope"`
+	Details                 bool            `toml:"details"`
+	CollectDisabled         bool            `toml:"collect_disabled_units"`
+	CollectDependencyHealth bool            `toml:"collect_dependency_health"`
+	Timeout                 config.Duration `toml:"timeout"`
+	Log                     telegraf.Logger `toml:"-"`
 	archParams
 }
 
@@ -348,6 +349,10 @@ func (s *SystemdUnits) Gather(acc telegraf.Accumulator) error {
 		}
 	}
 
+	// Keep track of the units for which the regular unit metric was emitted
+	// to also produce a dependency-aware health summary if enabled.
+	var collected []dbus.UnitStatus
+
 	// Merge the unit information into one struct
 	for _, state := range states {
 		// Filter units of the wrong type
@@ -448,9 +453,43 @@ func (s *SystemdUnits) Gather(acc telegraf.Accumulator) error {
 			}
 		}
 		acc.AddFields("systemd_units", fields, tags)
+		collected = append(collected, state)
+	}
+
+	// Collect the dependency-aware health summaries. This is done after the
+	// regular unit metrics so that disabling the feature leaves the metric
+	// output completely unchanged.
+	if s.CollectDependencyHealth && len(collected) > 0 {
+		s.gatherDependencyHealth(ctx, acc, collected)
 	}
 
 	return nil
+}
+
+// gatherDependencyHealth builds the dependency graph of the collected units
+// and emits one 'systemd_unit_health' summary metric per unit. The graph is
+// rebuilt on every gather cycle and a unit whose graph cannot be read
+// completely is explicitly reported as 'incomplete' instead of healthy.
+func (s *SystemdUnits) gatherDependencyHealth(ctx context.Context, acc telegraf.Accumulator, roots []dbus.UnitStatus) {
+	graph := newDependencyGraph(ctx, s.client, roots, s.Log, s.warnUnitProps)
+	names := make([]string, 0, len(roots))
+	for _, root := range roots {
+		names = append(names, root.Name)
+	}
+	graph.build(names)
+
+	for _, root := range roots {
+		code, fields := graph.analyze(root.Name)
+		fields["health_code"] = code
+		tags := map[string]string{
+			"name":   root.Name,
+			"health": healthNames[code],
+		}
+		if s.scope == "user" {
+			tags["user"] = s.user
+		}
+		acc.AddFields("systemd_unit_health", fields, tags)
+	}
 }
 
 func (s *SystemdUnits) Stop() {

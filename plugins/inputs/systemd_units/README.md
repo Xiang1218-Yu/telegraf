@@ -48,6 +48,17 @@ plugin ordering. See [CONFIGURATION.md][CONFIGURATION.md] for more details.
   ## Collect detailed information for the units
   # details = false
 
+  ## Collect a dependency-aware health summary for each unit
+  ## In addition to the regular unit metrics, emit a 'systemd_unit_health'
+  ## metric per unit that summarizes its 'Requires' and 'Wants' dependencies
+  ## as well as its reverse dependencies ('RequiredBy'/'WantedBy'). The
+  ## summary distinguishes own failures, failed dependencies, missing
+  ## dependencies and dependency cycles. If the dependency graph cannot be
+  ## read completely, the unit is reported as 'incomplete' instead of being
+  ## misjudged as healthy. The summary is rebuilt on every gather cycle and
+  ## reflects dependency changes.
+  # collect_dependency_health = false
+
   ## Timeout for state-collection
   # timeout = "5s"
 ```
@@ -99,6 +110,47 @@ The following *additional* metrics are available with `details = true`:
     - swap_peak (uint, peak swap usage)
     - mem_avail (uint, available memory for this unit)
     - active_enter_timestamp_us (uint, timestamp in us when entered the state)
+
+When `collect_dependency_health = true`, the plugin additionally emits a
+dependency-aware health summary per collected unit. The summary is rebuilt on
+every gather cycle from the current `Requires` and `Wants` (forward) as well
+as `RequiredBy` and `WantedBy` (reverse) dependencies, so changes of the
+dependency relationships are reflected in the next gather:
+
+- systemd_unit_health:
+  - tags:
+    - name (string, unit name)
+    - health (string, health verdict, see below)
+    - user (string, username only for user scope)
+  - fields:
+    - health_code (int, health verdict, see below)
+    - requires_total (int, number of direct `Requires` dependencies)
+    - wants_total (int, number of direct `Wants` dependencies)
+    - reverse_total (int, number of units requiring or wanting this unit)
+    - failed_dependencies (string, comma-separated failed reachable units)
+    - missing_dependencies (string, comma-separated non-existing reachable units)
+    - cyclic_dependencies (string, comma-separated units forming a dependency cycle)
+    - graph_complete (bool, false if the dependency graph could not be fully read)
+    - self_failed (bool, true if the unit itself is in a failed state)
+
+The `health` tag / `health_code` field use the following values, evaluated
+with the precedence `incomplete > self-failed > dependency-cycle >
+dependency-missing > dependency-failed > healthy`:
+
+| Value | Name                 | Description                                                            |
+| ----- | ----                 | -----------                                                            |
+| 0     | healthy              | the unit and all reachable dependencies are healthy                    |
+| 1     | self-failed          | the unit itself failed to load or run                                  |
+| 2     | dependency-failed    | a reachable `Requires` or `Wants` dependency failed                    |
+| 3     | dependency-missing   | a reachable dependency does not exist (`not-found`)                    |
+| 4     | dependency-cycle     | the unit is part of or reaches a dependency cycle                      |
+| 5     | incomplete           | the dependency graph could not be fully read, no health guarantee      |
+
+> [!NOTE]
+> If the dependency graph cannot be read completely (e.g. a unit property
+> lookup fails), the unit is reported as `incomplete` and `graph_complete`
+> is set to `false`. Such a unit is never reported as `healthy`; the
+> `self_failed` field still exposes the unit's own failure state.
 
 ### Load
 
